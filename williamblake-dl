@@ -1,0 +1,246 @@
+#!/bin/sh
+trap on_exit INT
+
+function on_exit {
+    rm awk-flag
+    exit
+}
+
+function fetch_images {
+    local tot_rec=$(echo "${images}" | wc -w)
+    echo "${images}" |
+	awk -v base_url="$BASE_IMG"		   \
+	    -v fail_lmt="$FAIL_LIMIT"		   \
+	    -v out_dir="$OUT_DIR"		   \
+	    -v sleep_time="$INTER_COPY_SLEEP_TIME" \
+	    -v user_agent="$USER_AGENT"            \
+            -v TR="$tot_rec" $'
+
+function first(page) {
+    if (page ~ /^[Pp][[:digit:]]+/)
+        return substr(page, 1, 1) "1" # p1 or P1
+    else if (page ~ /^[[:digit:]]+$/)
+        return "1"
+    else
+        return page
+}
+function fmt(id, cp, pg, opt) {
+    # modifies global vars: file, image_url, page
+    file = sprintf("%s.%s.%s", id, cp, page)
+    if (opt != "")
+        file = file "." opt
+    file = file ".300.jpg"
+    image_url = base_url "/" file
+    page = pg
+}
+
+function incr(id, cp, pg, opt,
+              newpage, lastpage) {
+    # generates new url and file with page determined by rule:
+    # 1 -> 1-2 -> 2 -> 2-3 -> 3
+    # calls fmt to modify global vars: file, image_url, page
+
+    newpage = ""
+    if (pg ~ /^[Pp]/) {
+        newpage = substr(pg, 1, 1) # P or p
+        pg = substr(pg, 2)       # digits
+    }
+    if (pg ~ /^[[:digit:]]+-[[:digit:]]+$/) {
+        lastpage = substr(pg, index(pg, "-") + 1)
+        newpage = newpage strtonum(lastpage)
+    }
+    else if (pg ~ /^[[:digit:]]+$/) {
+        newpage = newpage strtonum(pg) "-" strtonum(pg) + 1
+    }
+    else {
+        print "==err incrementing page!"
+        return 1
+    }
+    fmt(id, cp, newpage, opt)
+    return 0
+}
+
+function dl(image_url, fail_acc, prev_file_exists,
+            res) {
+    res = system("wget -q --show-progress -U " user_agent " -e robots=off --directory-prefix " out_dir " " image_url)
+    if (res == 0)
+        have_all_files = 0
+    if (res == 0 || prev_file_exists)
+        return 0
+    return ++fail_acc
+}
+
+function check_exit() {
+    if (system("test -f awk-flag") != 0)
+        exit 0
+}
+
+
+BEGIN {
+    FS = "."
+    fail_lmt = strtonum(fail_lmt)
+    some_unrecognized = 0
+    have_all_files = 1
+}
+# for each copy of a work
+{
+    fail_acc = 0
+
+    # validate
+    if ($0 !~ /^[[:alnum:]-]+\.[[:alnum:]-]+\.p?[[:digit:]]+(-[[:digit:]]+)?r?(\.[^[:space:]]+)?$/) {
+        # the extraneous r on column 76 is something occuring in biblicalwc
+        # matching allows to fail in incr, which is fine
+        print "==err format of", $0, "unrecognized, skipping"
+        some_unrecognized = 1
+        next
+    }
+    
+    id   = $1
+    cp   = $2
+    pg = first($3)
+    opt  = $4
+
+    file; image_url; page;
+    fmt(id, cp, pg, opt)
+
+    print "==[" FNR "/" TR "]", "Downloading all images for copy:", id "." cp, "by permuting url string"
+
+    prev_file_exists = 0
+    while (fail_acc < fail_lmt) {
+        check_exit()
+        print image_url
+        file_exists = !system("test -f " out_dir "/" file)
+
+        if (!file_exists) 
+            fail_acc = dl(image_url, fail_acc, prev_file_exists)
+        if (incr(id, cp, page, opt) != 0)
+            break
+        prev_file_exists = file_exists
+    }
+
+    # quarter the time, sleep between copy retrievals
+    if (rand() < 0.25) {
+        print "sleeping for", sleep_time
+        system("sleep " sleep_time)
+    }
+}
+
+END {
+    if (some_unrecognized)
+        exit 1
+    if (have_all_files)
+        exit 2
+    exit 0
+}
+
+'
+}
+
+function try_get_images {
+    # form of image strings:
+    #    1		 2		 3	 4
+    #    thel		.a-proof	.p1-2
+    # OR america	.e		.p2
+    # OR butwba10	.1		.1	.wc
+    # etc 1.2.3(.4)?
+    #
+    # where 1 is the work's abbrev. 2 is copy (prooof, a-z, 1-999). 3 is a page
+    # of form {i}, {i}-{i+1}, p{i}, p{i}-{i+1} where {i} is [1-999]. 4 is some
+    # optional abbreviation I don't understand.
+
+    local url="$1"
+    local grep_patt="$2"
+    local on_fail="$3"
+
+    echo "==curling ${url}"
+    images=$(curl -s "${url}" |
+		 tr "," "\n"  |
+		 grep --null -oPs "${grep_patt}")
+
+    [ $? -eq 0 ] && {
+        # found at least 1 copy of a work. Fetch all images for all copies
+        echo "Found (${images})"
+        fetch_images
+    }
+
+    case "$?" in
+        2) return 2;;
+        1) eval "${on_fail}";;
+    esac
+}
+
+
+WORKS='abel ahania america aro b-los bb122 bb125 bb126 bb134 bb136 bb203 bb206 bb209 bb32 bb421 bb435 bb448 bb456 bb465 bb466 bb467 bb468 bb469 bb470 bb471 bb49 bb499 bb504 bb514 bb515 bb69 bb74 bb85 bbwba14 bbwba504 biblicaltemperas biblicalwc but198 but244 but330 but335 but527 but528 but529 but536 but537 but538 but542 but543 but544 but550 but551 but557 but769 but812 but828 butwba10 cpd esi esii esiii esiv esix esv esvi esvii esviii esx esxi esxii esxiii esxiv esxv esxvi esxvii esxviii esxx esxxi europe gates-child gates-sexes gravepd gravewc gravewd homer jerusalem laocoon letters mhh milton nnr pencil1 pid s-inn s-los shakespearewc songsie thel urizen vda'
+
+#### ===========================================================================
+####                                call validation 
+case "$1" in
+    "") echo "Specify the output dir"; exit;;
+    -h|--help)
+      echo -e "Usage: williamblake-dl OUTPUT_DIR [FROM] [TO]\nwhere FROM, TO are work abbreviations (inclusive)\n"
+      echo -e "Work abbreviations:\n(${WORKS})"
+      exit
+      ;;
+esac
+
+#### ===========================================================================
+####                          list filter proc (inclusive) 
+[ -n "$2" ] && {
+    WORKS=$(echo "$WORKS" | awk -v from="$2" -v to="$3" $'
+
+BEGIN {RS="[[:space:]]"; flag=0; i=1; found_last = (to == "");}
+{
+    if ($0 == to && flag) {
+        res[i++] = $0
+        found_last = 1
+        exit
+    }
+    else if (flag) {
+        res[i++] = $0
+    }
+    else if ($0 == from && $0 == to) {
+         print
+         exit
+    }
+    else if ($0 == from) {
+        res[i++] = $0
+        flag = 1
+    }
+}
+END {
+    if (!found_last)
+        exit
+    for (i in res)
+        print res[i]
+}
+
+')
+}
+
+
+#### ===========================================================================
+####                                      main 
+BASE_API='http://www.blakearchive.org/api'
+BASE_IMG='http://www.blakearchive.org/images'
+FAIL_LIMIT=5
+USER_AGENT=$'"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36"'
+INTER_WORK_SLEEP_TIME='15s'
+INTER_COPY_SLEEP_TIME='5s'
+
+touch awk-flag
+OUT_DIR=$(readlink --canonicalize $1)
+
+echo "Selected (${WORKS})"
+
+for work in $WORKS ; do
+    echo "==Downloading all copies for work: ${work}"
+    try_get_images "${BASE_API}/work/${work}/copies" '(?<="image": ").*?(?=")' \
+                   "try_get_images ${BASE_API}/copy/${work}/objects \
+                                   '(?<=\"dbi\": \").*?(?=\")'"
+    [ $? -ne 2 ] && {
+        echo "sleeping for ${INTER_WORK_SLEEP_TIME}"
+        sleep "${INTER_WORK_SLEEP_TIME}"
+    }
+done
+
+on_exit
